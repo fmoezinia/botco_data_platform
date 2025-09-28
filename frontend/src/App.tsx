@@ -19,6 +19,14 @@ function App() {
     episodeId: string;
     episodePath: string;
   } | null>(null);
+  
+  // AI toggle state per episode
+  const [episodeAiStates, setEpisodeAiStates] = useState<{[key: string]: {
+    runAI: boolean;
+    aiTaskId: string | null;
+    aiTaskStatus: any | null;
+    aiError: string | null;
+  }}>({});
 
   useEffect(() => {
     fetchScenarios();
@@ -113,6 +121,26 @@ function App() {
     setSelectedEpisode(newSelectedEpisode);
   };
 
+  // Helper functions for episode-specific AI state
+  const getEpisodeKey = (scenarioId: string, sceneId: string, episodeId: string) => {
+    return `${scenarioId}/${sceneId}/${episodeId}`;
+  };
+
+  const getCurrentEpisodeAiState = () => {
+    if (!selectedEpisode) return null;
+    const key = getEpisodeKey(selectedEpisode.scenarioId, selectedEpisode.sceneId, selectedEpisode.episodeId);
+    return episodeAiStates[key] || { runAI: false, aiTaskId: null, aiTaskStatus: null, aiError: null };
+  };
+
+  const updateEpisodeAiState = (updates: any) => {
+    if (!selectedEpisode) return;
+    const key = getEpisodeKey(selectedEpisode.scenarioId, selectedEpisode.sceneId, selectedEpisode.episodeId);
+    setEpisodeAiStates(prev => ({
+      ...prev,
+      [key]: { ...getCurrentEpisodeAiState(), ...updates }
+    }));
+  };
+
   return (
     <div className="app">
       {/* Header - Thin Blue Bar */}
@@ -200,6 +228,8 @@ function App() {
               episodeName={selectedEpisode.episodeId}
               scenarioName={selectedEpisode.scenarioId}
               sceneName={selectedEpisode.sceneId}
+              aiState={getCurrentEpisodeAiState()}
+              onAiStateChange={updateEpisodeAiState}
             />
           ) : (
             <div className="dashboard-content">
