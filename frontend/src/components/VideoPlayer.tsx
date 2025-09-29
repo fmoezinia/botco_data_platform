@@ -30,7 +30,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   aiState,
   onAiStateChange
 }) => {
-  // Use the passed-in AI state instead of local state
   const runAI = aiState?.runAI || false;
   const aiTaskId = aiState?.aiTaskId || null;
   const aiTaskStatus = aiState?.aiTaskStatus || null;
@@ -41,14 +40,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   
   // Construct the relative video path for SAM2 API
   const getVideoRelativePath = () => {
-    // episodePath is like "/video/scenario/scene/episode.mp4"
-    // We need "scenario/scene/episode.mp4" for the SAM2 API
     return episodePath.replace('/video/', '');
   };
 
   // Start AI processing when runAI is toggled on
   useEffect(() => {
-    if (runAI && !aiTaskId) {
+    if (runAI && !aiTaskId && !aiError) {
       startAIProcessing();
     } else if (!runAI && aiTaskId) {
       // Reset AI state when toggled off
@@ -59,193 +56,214 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         aiError: null
       });
     }
-  }, [runAI, aiTaskId]);
+  }, [runAI, aiTaskId, aiError]);
 
-  // Poll AI task status
+  // Poll for AI task status when task is running
   useEffect(() => {
-    if (aiTaskId && aiTaskStatus?.status !== 'COMPLETED' && aiTaskStatus?.status !== 'FAILED') {
-      const interval = setInterval(checkAITaskStatus, 2000); // Check every 2 seconds
-      return () => clearInterval(interval);
+    if (aiTaskId && (aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING')) {
+      console.log('🔄 Starting task polling for status:', aiTaskStatus?.status);
+      const interval = setInterval(checkAITaskStatus, 2000);
+      return () => {
+        console.log('🛑 Stopping task polling');
+        clearInterval(interval);
+      };
     }
   }, [aiTaskId, aiTaskStatus?.status]);
 
   const startAIProcessing = async () => {
     try {
       onAiStateChange({ aiError: null });
-      const response = await fetch('http://localhost:8000/ai/process-video', {
+      
+      const videoPath = getVideoRelativePath();
+      console.log('🎥 Video path being sent:', videoPath);
+      console.log('🎥 Episode path:', episodePath);
+      
+      const requestBody = {
+        video_relative_path: videoPath,
+        prompts: [{
+          frame_idx: 0,
+          prompts: [{
+            type: 'point',
+            coordinates: [160, 120],
+            label: 1
+          }]
+        }],
+        mode: 'automatic_mask_generator'
+      };
+      console.log('📤 Request body:', requestBody);
+      
+      const response = await fetch('http://localhost:8000/api/v1/ai/process-video', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          video_relative_path: getVideoRelativePath(),
-          prompts: null // No specific prompts for now
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        throw new Error(`AI service error: ${response.statusText}`);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
-      onAiStateChange({ aiTaskId: data.task_id });
-      console.log('AI processing started:', data.task_id);
+      console.log('🚀 AI processing response:', data);
+      
+      if (data.success && data.data?.task_id) {
+        console.log('🎯 Setting AI task ID:', data.data.task_id);
+        const stateUpdate = { 
+          aiTaskId: data.data.task_id,
+          aiTaskStatus: { status: 'PENDING', progress: 0 }
+        };
+        console.log('🔄 Calling onAiStateChange with:', stateUpdate);
+        onAiStateChange(stateUpdate);
+      } else {
+        throw new Error(data.message || 'Failed to start AI processing');
+      }
     } catch (error) {
-      console.error('Error starting AI processing:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      onAiStateChange({ 
-        aiError: errorMessage,
-        runAI: false 
-      });
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      onAiStateChange({ aiError: errorMessage });
     }
   };
 
   const checkAITaskStatus = async () => {
-    if (!aiTaskId) return;
+    if (!aiTaskId) {
+      console.log('❌ No AI task ID available for status check');
+      return;
+    }
 
     try {
-      console.log('🔍 DEBUG: Checking AI task status for:', aiTaskId);
-      const response = await fetch(`http://localhost:8000/ai/task-status/${aiTaskId}`);
-      if (response.ok) {
-        const status: AITaskStatus = await response.json();
-        const previousStatus = aiTaskStatus?.status;
+      console.log(`🔍 Checking task status for ID: ${aiTaskId}`);
+      const response = await fetch(`http://localhost:8000/api/v1/ai/tasks/${aiTaskId}`);
+      const data = await response.json();
+      
+      console.log('📡 Task status response:', data);
+      
+      if (data.success && data.data) {
+        console.log('✅ Updating task status:', data.data);
+        const statusUpdate = { aiTaskStatus: data.data };
+        console.log('🔄 Calling onAiStateChange with status update:', statusUpdate);
+        onAiStateChange(statusUpdate);
         
-        console.log('🔍 DEBUG: AI task status response:', status);
-        console.log('🔍 DEBUG: Previous status:', previousStatus);
-        console.log('🔍 DEBUG: Current status:', status.status);
-        
-        onAiStateChange({ aiTaskStatus: status });
-        
-        // Only log when status changes to finished
-        if ((status.status === 'COMPLETED' || status.status === 'FAILED') && 
-            previousStatus !== 'COMPLETED' && previousStatus !== 'FAILED') {
-          console.log('🎉 AI task finished:', status);
-          console.log('🎉 Result:', status.result);
-          console.log('🎉 Visualization:', status.result?.visualization);
+        if (data.data.status === 'COMPLETED' || data.data.status === 'FAILED') {
+          console.log(`🏁 Task finished with status: ${data.data.status}`);
+          // Task finished, stop polling
+          return;
         }
+      } else {
+        console.log('❌ Task status response not successful:', data);
       }
     } catch (error) {
-      console.error('Error checking AI task status:', error);
+      console.error('💥 Failed to check AI task status:', error);
     }
   };
 
   // Get visualization video URL if available
   const getVisualizationUrl = () => {
-    console.log('🔍 DEBUG: getVisualizationUrl called');
-    console.log('🔍 DEBUG: aiTaskStatus:', aiTaskStatus);
-    console.log('🔍 DEBUG: aiTaskStatus?.status:', aiTaskStatus?.status);
-    console.log('🔍 DEBUG: aiTaskStatus?.result:', aiTaskStatus?.result);
-    console.log('🔍 DEBUG: aiTaskStatus?.result?.visualization:', aiTaskStatus?.result?.visualization);
+    console.log('🎬 Getting visualization URL...');
+    console.log('📊 AI Task Status:', aiTaskStatus);
+    console.log('📊 AI Task Result:', aiTaskStatus?.result);
+    console.log('📊 Visualization:', aiTaskStatus?.result?.visualization);
     
     if (aiTaskStatus?.status === 'COMPLETED' && aiTaskStatus?.result?.visualization) {
       const url = `http://localhost:8000${aiTaskStatus.result.visualization.visualization_path}`;
-      console.log('🔍 DEBUG: Generated visualization URL:', url);
+      console.log('✅ Generated visualization URL:', url);
       return url;
     }
-    console.log('🔍 DEBUG: No visualization URL available');
+    console.log('❌ No visualization URL available');
     return null;
   };
 
   const visualizationUrl = getVisualizationUrl();
-  console.log('🔍 DEBUG: Final visualizationUrl:', visualizationUrl);
+
+  // Debug current state
+  console.log('🔍 Current AI State:', {
+    aiTaskId,
+    aiTaskStatus,
+    runAI,
+    visualizationUrl
+  });
+
+  const getStatusIndicator = () => {
+    if (aiTaskStatus?.status === 'COMPLETED' && visualizationUrl) {
+      return 'success';
+    } else if (aiTaskStatus?.status === 'FAILED' || aiError) {
+      return 'error';
+    } else if (aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING') {
+      return 'pending';
+    }
+    return 'empty';
+  };
+
+  const statusIndicator = getStatusIndicator();
 
   return (
     <div className="video-player-container">
       <div className="video-header">
-        <h2>{scenarioName} - {sceneName} - Episode {episodeName}</h2>
+        <div>
+          <h2 className="text-xl font-semibold text-gray-800">{episodeName}</h2>
+          <p className="text-sm text-gray-600">
+            {scenarioName} / {sceneName}
+          </p>
+        </div>
         
-        {/* RunAI Toggle */}
         <div className="ai-controls">
           <label className="ai-toggle">
             <input
               type="checkbox"
               checked={runAI}
               onChange={(e) => onAiStateChange({ runAI: e.target.checked })}
+              disabled={aiTaskStatus?.status === 'RUNNING'}
             />
-            <span className="toggle-label">RunAI</span>
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">Initiate background AI processing</span>
           </label>
           
-          {/* AI Status Display */}
           {aiTaskId && (
             <div className="ai-status">
-              <div className="ai-task-info">
-                <strong>AI Task:</strong> {aiTaskId.substring(0, 8)}...
-              </div>
-              {aiTaskStatus && (
-                <div className="ai-progress">
-                  <div className="progress-bar">
-                    <div 
-                      className="progress-fill" 
-                      style={{ width: `${aiTaskStatus.progress * 100}%` }}
-                    />
-                  </div>
-                  <span className="progress-text">
-                    {aiTaskStatus.status} ({Math.round(aiTaskStatus.progress * 100)}%)
-                  </span>
+              <div className={`status-indicator ${statusIndicator}`}></div>
+              <span className="text-sm text-gray-700">
+                {aiTaskStatus?.status === 'RUNNING' && `Processing... ${Math.round((aiTaskStatus.progress || 0) * 100)}%`}
+                {aiTaskStatus?.status === 'COMPLETED' && 'AI Processing Complete'}
+                {aiTaskStatus?.status === 'FAILED' && 'AI Processing Failed'}
+                {aiTaskStatus?.status === 'PENDING' && 'AI Processing Pending'}
+              </span>
+              {aiTaskStatus?.status === 'RUNNING' && (
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill"
+                    style={{ width: `${(aiTaskStatus.progress || 0) * 100}%` }}
+                  ></div>
                 </div>
-              )}
-              {aiTaskStatus?.status === 'COMPLETED' && (
-                <div className="ai-result">✅ AI processing completed!</div>
-              )}
-              {aiTaskStatus?.status === 'FAILED' && (
-                <div className="ai-error">❌ AI processing failed: {aiTaskStatus.error}</div>
               )}
             </div>
           )}
           
           {aiError && (
-            <div className="ai-error">❌ {aiError}</div>
+            <div className="text-red-600 text-sm mt-1">
+              Error: {aiError}
+            </div>
           )}
-          
-          {/* Debug Information */}
-          <div style={{ 
-            background: 'rgba(0,0,0,0.8)', 
-            padding: '10px', 
-            marginTop: '10px', 
-            borderRadius: '5px',
-            fontSize: '12px',
-            fontFamily: 'monospace'
-          }}>
-            <div><strong>DEBUG INFO:</strong></div>
-            <div>AI Task ID: {aiTaskId || 'None'}</div>
-            <div>AI Status: {aiTaskStatus?.status || 'None'}</div>
-            <div>Visualization URL: {visualizationUrl || 'None'}</div>
-            <div>Has Visualization: {aiTaskStatus?.result?.visualization ? 'Yes' : 'No'}</div>
-            {aiTaskStatus?.result?.visualization && (
-              <div>Visualization Path: {aiTaskStatus.result.visualization.visualization_path}</div>
-            )}
-          </div>
         </div>
       </div>
-      
+
       <div className="video-content">
         <div className="video-grid">
-          {/* Original Video */}
+          {/* Original Video Section */}
           <div className="video-section">
             <div className="video-label">Original Video</div>
             <div className="video-wrapper">
               <video 
                 src={videoUrl}
                 controls
-                autoPlay
                 className="video-display"
               />
             </div>
           </div>
-          
-          {/* SAM2 Visualization Video */}
+
+          {/* SAM2 Visualization Section */}
           <div className="video-section">
             <div className="video-label">
               SAM2 Segmentation
-              {visualizationUrl ? (
-                <span className="status-indicator success">✓ Ready</span>
-              ) : aiTaskStatus?.status === 'COMPLETED' ? (
-                <span className="status-indicator error">✗ No visualization</span>
-              ) : aiTaskStatus?.status === 'RUNNING' ? (
-                <span className="status-indicator pending">⏳ Processing...</span>
-              ) : (
-                <span className="status-indicator empty">○ Empty</span>
-              )}
+              <div className={`status-indicator ${statusIndicator}`}></div>
             </div>
             <div className="video-wrapper">
               {visualizationUrl ? (
@@ -254,30 +272,28 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   controls
                   autoPlay
                   className="video-display"
-                  onLoadStart={() => console.log('🎬 DEBUG: Visualization video load started')}
-                  onLoadedMetadata={() => console.log('🎬 DEBUG: Visualization video metadata loaded')}
-                  onLoadedData={() => console.log('🎬 DEBUG: Visualization video data loaded')}
-                  onCanPlay={() => console.log('🎬 DEBUG: Visualization video can play')}
-                  onPlay={() => console.log('🎬 DEBUG: Visualization video started playing')}
-                  onError={(e) => console.error('🎬 DEBUG: Visualization video error:', e)}
-                  onLoad={() => console.log('🎬 DEBUG: Visualization video load complete')}
                 />
+              ) : runAI || aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING' ? (
+                <div className="video-placeholder">
+                  <div className="placeholder-content">
+                    <div className="spinner"></div>
+                    <p>Generating SAM2 visualization...</p>
+                    {(aiTaskStatus?.status === 'RUNNING' || runAI) && (
+                      <p className="text-sm text-gray-500">
+                        Progress: {Math.round((aiTaskStatus?.progress || 0) * 100)}%
+                      </p>
+                    )}
+                    {aiTaskStatus?.result?.visualization_error && (
+                      <p className="text-sm text-red-500">
+                        Visualization Error: {aiTaskStatus.result.visualization_error}
+                      </p>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="video-placeholder">
                   <div className="placeholder-content">
-                    {aiTaskStatus?.status === 'RUNNING' ? (
-                      <>
-                        <div className="spinner"></div>
-                        <p>Generating SAM2 visualization...</p>
-                        <small>{Math.round(aiTaskStatus.progress * 100)}% complete</small>
-                      </>
-                    ) : (
-                      <>
-                        <div className="placeholder-icon">🎬</div>
-                        <p>No visualization yet</p>
-                        <small>Toggle "RunAI" to generate SAM2 segmentation</small>
-                      </>
-                    )}
+                    <p>Enable AI processing to generate segmentation visualization</p>
                   </div>
                 </div>
               )}

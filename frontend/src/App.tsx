@@ -7,6 +7,7 @@ function App() {
   const [expandedScene, setExpandedScene] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<string[]>([]);
   const [scenes, setScenes] = useState<{[key: string]: string[]}>({});
+  const [sceneDetails, setSceneDetails] = useState<{[key: string]: any[]}>({});
   const [episodes, setEpisodes] = useState<{[key: string]: string[]}>({});
   const [loading, setLoading] = useState(true);
   const [loadingScenes, setLoadingScenes] = useState<string | null>(null);
@@ -54,6 +55,10 @@ function App() {
       setScenes(prev => ({
         ...prev,
         [scenarioId]: data.scenes || []
+      }));
+      setSceneDetails(prev => ({
+        ...prev,
+        [scenarioId]: data.scene_details || []
       }));
     } catch (error) {
       console.error('Error fetching scenes:', error);
@@ -141,6 +146,16 @@ function App() {
     }));
   };
 
+  const getCurrentSceneDescription = () => {
+    if (!selectedEpisode) return null;
+    
+    const details = sceneDetails[selectedEpisode.scenarioId];
+    if (!details) return null;
+    
+    const sceneDetail = details.find(scene => scene.id === selectedEpisode.sceneId);
+    return sceneDetail?.description || null;
+  };
+
   return (
     <div className="app">
       {/* Header - Thin Blue Bar */}
@@ -149,6 +164,18 @@ function App() {
           <h1 className="header-title">Botco Data Platform</h1>
         </div>
       </header>
+
+      {/* Scene Description Section */}
+      {selectedEpisode && (
+        <div className="scene-description-section">
+          <div className="scene-description-content">
+            <h3 className="scene-description-title">Scene Description</h3>
+            <p className="scene-description-text">
+              {getCurrentSceneDescription() || "No description available for this scene."}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="main-container">
         {/* Left Sidebar */}

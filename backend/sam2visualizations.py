@@ -69,7 +69,14 @@ def create_visualization_video(
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     # Generate colors for each object
-    max_objects = max(len(seg['object_ids']) for seg in segmentation_results)
+    max_objects = 0
+    for seg in segmentation_results:
+        object_ids = seg.get('object_ids', [])
+        if isinstance(object_ids, list):
+            max_objects = max(max_objects, len(object_ids))
+        else:
+            print(f"Warning: object_ids is not a list: {type(object_ids)}")
+    
     colors = generate_colors(max_objects + 1)  # +1 for safety
     
     processed_frames = 0
@@ -95,6 +102,14 @@ def create_visualization_video(
         if frame_segmentation:
             object_ids = frame_segmentation.get('object_ids', [])
             masks = frame_segmentation.get('masks', [])
+            
+            # Ensure object_ids and masks are lists
+            if not isinstance(object_ids, list):
+                print(f"Warning: object_ids is not a list: {type(object_ids)}")
+                object_ids = []
+            if not isinstance(masks, list):
+                print(f"Warning: masks is not a list: {type(masks)}")
+                masks = []
             
             # Apply masks with colors
             for i, (obj_id, mask_data) in enumerate(zip(object_ids, masks)):

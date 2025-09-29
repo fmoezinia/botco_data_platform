@@ -1,40 +1,129 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+"""
+Botco Data Platform - Main Application
+
+A professional robotics data visualization platform with AI-powered segmentation.
+"""
 import os
 import time
-import uuid
-from routes import router
-from scenario_service import scan_video_directory
-from sam2visualizations import create_simple_visualization
-from typing import Dict, Any, Optional, List
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from typing import Dict, Any
 
-# Create FastAPI app
-app = FastAPI(title="Botco Data Platform API", version="1.0.0")
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import mimetypes
+
+from config import settings
+from utils.logging import logger
+from exceptions import BotcoException, FileNotFoundError, ServiceUnavailableError
+from models import APIResponse, HealthCheck, ProcessVideoRequest, TaskInfo
+from services.storage_service import storage_manager
+from services.task_manager import task_manager
+from services.sam2_service import sam2_service
+from services.scenario_service import scenario_service
+# AI routes are defined directly in main.py, scenarios router imported separately
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    logger.info("Starting Botco Data Platform...")
+    logger.info(f"Version: {settings.app_version}")
+    logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"Storage mode: {settings.storage_mode}")
+    
+    # Initialize services
+    try:
+        logger.info("Initializing SAM2 AI service...")
+        await sam2_service.initialize()
+        logger.info("SAM2 AI service initialized successfully")
+    except Exception as e:
+        logger.warning(f"SAM2 service initialization failed (optional): {e}")
+        logger.info("Continuing without SAM2 service - AI features will be disabled")
+    
+    try:
+        logger.info("Scanning video directory...")
+        scenarios = scenario_service.scan_video_directory()
+        logger.info(f"Found {len(scenarios)} scenarios with {sum(s.total_episodes for s in scenarios)} total episodes")
+    except Exception as e:
+        logger.error(f"Failed to scan video directory: {e}")
+        raise ServiceUnavailableError("Video directory scanning failed")
+    
+    logger.info("Botco Data Platform started successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Botco Data Platform...")
+    task_manager.shutdown()
+    logger.info("Shutdown complete")
+
+
+# Create FastAPI application
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="A professional robotics data visualization platform with AI-powered segmentation",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None
+)
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files with custom handler for videos
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-import mimetypes
 
+# Global exception handler
+@app.exception_handler(BotcoException)
+async def botco_exception_handler(request: Request, exc: BotcoException):
+    """Handle custom Botco exceptions."""
+    logger.error(f"Botco exception: {exc.message} (Code: {exc.error_code})")
+    return APIResponse(
+        success=False,
+        message=exc.message,
+        error=exc.error_code,
+        data=exc.details
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions."""
+    logger.error(f"HTTP exception: {exc.detail} (Status: {exc.status_code})")
+    return APIResponse(
+        success=False,
+        message=exc.detail,
+        error=f"HTTP_{exc.status_code}"
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle general exceptions."""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return APIResponse(
+        success=False,
+        message="An unexpected error occurred",
+        error="INTERNAL_ERROR"
+    )
+
+
+# Static file serving with proper headers
 @app.get("/static/{path:path}")
 async def serve_static_file(path: str):
-    """Serve static files with proper headers"""
-    file_path = os.path.join("data", path)
+    """Serve static files with proper headers."""
+    file_path = os.path.join(settings.data_dir, path)
     
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise FileNotFoundError(f"File not found: {path}")
     
     # Determine content type
     content_type, _ = mimetypes.guess_type(file_path)
@@ -57,122 +146,163 @@ async def serve_static_file(path: str):
     else:
         return FileResponse(file_path, media_type=content_type)
 
-# Custom video endpoint with proper headers
-@app.get("/video/{path:path}")
-@app.head("/video/{path:path}")
-async def serve_video(path: str):
-    """Serve video files with proper Content-Type and CORS headers"""
-    video_path = os.path.join("data", "videos", path)
-    
-    if not os.path.exists(video_path):
-        raise HTTPException(status_code=404, detail="Video not found")
-    
-    if not video_path.endswith('.mp4'):
-        raise HTTPException(status_code=400, detail="Only MP4 files are supported")
-    
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Type": "video/mp4",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "Cache-Control": "public, max-age=3600"
-        }
+
+# Health check endpoint
+@app.get("/health", response_model=HealthCheck)
+async def health_check():
+    """Health check endpoint."""
+    return HealthCheck(
+        status="healthy",
+        timestamp=time.time(),
+        version=settings.app_version,
+        uptime=time.time() - start_time
     )
 
-# Include routes
-app.include_router(router)
 
-# SAM2 AI Models and Data
-from task_manager import TaskStatus, task_manager
+# Include API routes (excluding AI routes which are defined directly in main.py)
+from routes.scenarios import router as scenarios_router
+app.include_router(scenarios_router, prefix="/api/v1")
 
-class ProcessVideoRequest(BaseModel):
-    video_relative_path: str
-    prompts: Optional[List[Dict[str, Any]]] = None
-    mode: Optional[str] = "automatic_mask_generator"  # "automatic_mask_generator" or "video_predictor"
-
-# Import and initialize SAM2 model
-try:
-    from sam2hiera_service import Sam2HieraTinyModel, _sam2_video_processing_task
-    
-    # Initialize SAM2 model
-    print("Initializing SAM2-Hiera-Tiny model...")
-    ai_model = Sam2HieraTinyModel()
-    SAM2_AVAILABLE = ai_model.model_available if hasattr(ai_model, 'model_available') else True
-    print(f"SAM2 model initialization completed. Available: {SAM2_AVAILABLE}")
-except Exception as e:
-    print(f"SAM2 model initialization failed: {e}")
-    ai_model = None
-    SAM2_AVAILABLE = False
-
-# SAM2 AI Endpoints
-@app.post("/ai/process-video")
-async def process_video_ai(request: ProcessVideoRequest):
-    """Start AI processing for a video"""
-    if not SAM2_AVAILABLE:
-        raise HTTPException(status_code=503, detail="SAM2 AI service is not available")
-    
-    # Create task using the task manager
-    task_id = task_manager.create_task(
-        _sam2_video_processing_task,
-        request.video_relative_path,
-        request.prompts,
-        request.mode
-    )
-    
-    print(f"Real SAM2 processing started for video: {request.video_relative_path}")
-    return {"message": "SAM2 processing started", "task_id": task_id}
-
-@app.get("/ai/task-status/{task_id}", response_model=TaskStatus)
-async def get_task_status(task_id: str):
-    """Get AI task status"""
-    task = task_manager.get_task_status(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    return task
-
-@app.get("/ai/tasks", response_model=List[TaskStatus])
-async def list_tasks():
-    """List all AI tasks"""
-    return task_manager.list_tasks()
-
-@app.post("/ai/kill-task/{task_id}")
-async def kill_task(task_id: str):
-    """Manually kill a running task"""
-    success = task_manager.kill_task(task_id)
-    if success:
-        return {"message": f"Task {task_id} killed successfully"}
-    else:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-@app.post("/ai/generate-visualization/{task_id}")
-async def generate_visualization(task_id: str):
-    """Generate a visualization video from completed SAM2 results"""
-    task = task_manager.get_task_status(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task.status != "COMPLETED":
-        raise HTTPException(status_code=400, detail="Task not completed yet")
-    
+# AI Processing endpoints
+@app.post("/api/v1/ai/process-video")
+async def process_video(request: ProcessVideoRequest):
+    """Process video with SAM2."""
     try:
-        # Generate visualization using the new module
-        result = create_simple_visualization(task_id, task.result)
-        return {"message": "Visualization generated successfully", "result": result}
+        from sam2hiera_service import _sam2_video_processing_task
+        
+        # Generate a unique task ID
+        import uuid
+        task_id = str(uuid.uuid4())
+        
+        # Create a progress callback that updates task status
+        def progress_callback(progress: float):
+            # Update task status in task manager
+            task_manager.update_task_status(task_id, "RUNNING", progress=progress)
+        
+        # Start processing in background
+        import asyncio
+        asyncio.create_task(_process_video_background(task_id, request, progress_callback))
+        
+        return {
+            "success": True,
+            "message": "Video processing started",
+            "data": {"task_id": task_id}
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Visualization generation failed: {str(e)}")
+        logger.error(f"Failed to start video processing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Initialize data on startup
-@app.on_event("startup")
-async def startup_event():
-    print("Scanning video directory...")
-    scenarios = scan_video_directory()
-    print(f"Found {len(scenarios)} scenarios with total episodes: {sum(s.total_episodes for s in scenarios)}")
+async def _process_video_background(task_id: str, request: ProcessVideoRequest, progress_callback):
+    """Background task for video processing."""
+    try:
+        from sam2hiera_service import _sam2_video_processing_task
+        
+        # Process video
+        result = _sam2_video_processing_task(
+            task_id=task_id,
+            progress_callback=progress_callback,
+            relative_video_path=request.video_relative_path,
+            prompts=request.prompts,
+            mode=request.mode
+        )
+        
+        # Mark task as completed
+        task_manager.update_task_status(task_id, "COMPLETED", progress=1.0, result=result)
+        logger.info(f"Video processing completed for task {task_id}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        task_manager.update_task_status(task_id, "FAILED", error=error_msg)
+        logger.error(f"Video processing failed for task {task_id}: {error_msg}")
+
+@app.get("/api/v1/ai/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """Get task status."""
+    try:
+        task = task_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        return {
+            "success": True,
+            "message": "Task status retrieved",
+            "data": task.dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get task status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Legacy endpoints for frontend compatibility
+@app.get("/scenarios-list")
+async def legacy_scenarios_list():
+    """Legacy endpoint for scenarios list."""
+    try:
+        scenarios = scenario_service.get_scenarios()
+        return {
+            "scenarios": [scenario.id for scenario in scenarios]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get scenarios: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/test")
+async def test_endpoint():
+    """Test endpoint."""
+    return {"message": "Test endpoint working"}
+
+@app.get("/scenarios/{scenario_id}/scenes")
+async def legacy_scenes_list(scenario_id: str):
+    """Legacy endpoint for scenes list."""
+    try:
+        scenes = scenario_service.get_scenes(scenario_id)
+        return {
+            "scenes": [scene.id for scene in scenes],
+            "scene_details": [{
+                "id": scene.id,
+                "name": scene.name,
+                "description": scene.description,
+                "episode_count": scene.episode_count
+            } for scene in scenes]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get scenes for scenario {scenario_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/scenarios/{scenario_id}/scenes/{scene_id}/episodes")
+async def legacy_episodes_list(scenario_id: str, scene_id: str):
+    """Legacy endpoint for episodes list."""
+    try:
+        episodes = scenario_service.get_episodes(scenario_id, scene_id)
+        return {
+            "episodes": [episode.id for episode in episodes]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get episodes for scene {scenario_id}/{scene_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/video/{path:path}")
+async def legacy_video_serve(path: str):
+    """Legacy endpoint for video serving."""
+    video_path = f"videos/{path}"
+    return await serve_static_file(video_path)
+
+
+# Store start time for uptime calculation
+start_time = time.time()
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    logger.info(f"Starting server on {settings.host}:{settings.port}")
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        log_level="debug" if settings.debug else "info"
+    )

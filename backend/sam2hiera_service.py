@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-from task_manager import TaskStatus
+from services.task_manager import TaskStatus
 from sam2visualizations import create_simple_visualization
 
 # Configuration
@@ -145,8 +145,15 @@ class Sam2HieraTinyModel:
             print(f"Loaded image with shape: {image.shape}")
             
             # Generate masks for the first frame
-            masks = self.mask_generator.generate(image)
-            print(f"Generated {len(masks)} masks")
+            masks_result = self.mask_generator.generate(image)
+            print(f"Generated {len(masks_result)} masks")
+            
+            # Ensure masks is a list
+            if not isinstance(masks_result, list):
+                print(f"ERROR: mask generator returned {type(masks_result)}, expected list")
+                raise Exception(f"Expected masks to be a list, got {type(masks_result)}")
+            
+            generated_masks = masks_result
             
             # Process all JPEG frames and apply masks to each
             segmentation_results = []
@@ -166,9 +173,7 @@ class Sam2HieraTinyModel:
                 frame_masks = []
                 frame_object_ids = []
                 
-                for i, mask_data in enumerate(masks):
-                    print(f"DEBUG: Processing mask {i}, type: {type(mask_data)}")
-                    print(f"DEBUG: Mask keys: {mask_data.keys() if hasattr(mask_data, 'keys') else 'No keys method'}")
+                for i, mask_data in enumerate(generated_masks):
                     
                     # Store full mask data with all metadata
                     full_mask_data = {
@@ -194,7 +199,7 @@ class Sam2HieraTinyModel:
                 
                 # Initialize object tracking for first frame
                 if frame_idx == 0:
-                    for i, mask_data in enumerate(masks):
+                    for i, mask_data in enumerate(generated_masks):
                         object_tracking[i + 1] = {
                             'first_frame': frame_idx,
                             'initial_mask': mask_data['segmentation'].tolist()
@@ -293,7 +298,6 @@ def _sam2_video_processing_task(task_id: str, progress_callback: callable, relat
     global ai_model
     
     print(f"Task {task_id}: SAM2 processing started for video: {relative_video_path}")
-    
     if ai_model is None:
         raise Exception("AI model failed to load at startup or is not available.")
     
