@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-from services.task_manager import TaskStatus
+# TaskStatus import removed - using simple string status
 from sam2visualizations import create_simple_visualization
 
 # Configuration
