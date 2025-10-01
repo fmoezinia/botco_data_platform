@@ -19,7 +19,7 @@ async def get_scenarios():
         return APIResponse(
             success=True,
             message=f"Found {len(scenarios)} scenarios",
-            data=[scenario.dict() for scenario in scenarios]
+            data=[scenario.model_dump() for scenario in scenarios]
         )
     except Exception as e:
         logger.error(f"Failed to get scenarios: {e}")
@@ -37,7 +37,7 @@ async def get_scenario(scenario_id: str):
         return APIResponse(
             success=True,
             message="Scenario retrieved successfully",
-            data=scenario.dict()
+            data=scenario.model_dump()
         )
     except HTTPException:
         raise
@@ -54,7 +54,7 @@ async def get_scenes(scenario_id: str):
         return APIResponse(
             success=True,
             message=f"Found {len(scenes)} scenes",
-            data=[scene.dict() for scene in scenes]
+            data=[scene.model_dump() for scene in scenes]
         )
     except Exception as e:
         logger.error(f"Failed to get scenes for scenario {scenario_id}: {e}")
@@ -69,7 +69,7 @@ async def get_episodes(scenario_id: str, scene_id: str):
         return APIResponse(
             success=True,
             message=f"Found {len(episodes)} episodes",
-            data=[episode.dict() for episode in episodes]
+            data=[episode.model_dump() for episode in episodes]
         )
     except Exception as e:
         logger.error(f"Failed to get episodes for scene {scenario_id}/{scene_id}: {e}")
@@ -86,7 +86,7 @@ async def get_episode(scenario_id: str, scene_id: str, episode_id: str):
         
         # Get frames for this episode
         frames = scenario_service.get_episode_frames(episode.file_path)
-        episode_data = episode.dict()
+        episode_data = episode.model_dump()
         episode_data['frames'] = frames
         
         return APIResponse(

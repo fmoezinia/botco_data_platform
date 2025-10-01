@@ -5,18 +5,35 @@ interface VideoPlayerProps {
   episodeName: string;
   scenarioName: string;
   sceneName: string;
+  aiState: {
+    runAI: boolean;
+    aiTaskId: string | null;
+    aiTaskStatus: any | null;
+    aiError: string | null;
+  } | null;
+  onAiStateChange: (updates: any) => void;
+}
+
+interface AITaskStatus {
+  task_id: string;
+  status: string;
+  progress: number;
+  result?: any;
+  error?: string;
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
   episodePath, 
   episodeName, 
   scenarioName, 
-  sceneName 
+  sceneName,
+  aiState,
+  onAiStateChange
 }) => {
-  const [runAI, setRunAI] = useState(false);
-  const [aiTaskId, setAiTaskId] = useState<string | null>(null);
-  const [aiTaskStatus, setAiTaskStatus] = useState<any>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
+  const runAI = aiState?.runAI || false;
+  const aiTaskId = aiState?.aiTaskId || null;
+  const aiTaskStatus = aiState?.aiTaskStatus || null;
+  const aiError = aiState?.aiError || null;
 
   // Construct the full video URL
   const videoUrl = `http://localhost:8000${episodePath}`;
@@ -26,27 +43,61 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return episodePath.replace('/video/', '');
   };
 
+  // Start AI processing when runAI is toggled on
+  useEffect(() => {
+    if (runAI && !aiTaskId && !aiError) {
+      startAIProcessing();
+    } else if (!runAI && aiTaskId) {
+      // Reset AI state when toggled off
+      onAiStateChange({
+        runAI: false,
+        aiTaskId: null,
+        aiTaskStatus: null,
+        aiError: null
+      });
+    }
+  }, [runAI, aiTaskId, aiError]);
+
+  // Poll for AI task status when task is running
+  useEffect(() => {
+    if (aiTaskId && (aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING')) {
+      console.log('🔄 Starting task polling for status:', aiTaskStatus?.status);
+      const interval = setInterval(checkAITaskStatus, 2000);
+      return () => {
+        console.log('🛑 Stopping task polling');
+        clearInterval(interval);
+      };
+    }
+  }, [aiTaskId, aiTaskStatus?.status]);
+
   const startAIProcessing = async () => {
     try {
-      setAiError(null);
+      onAiStateChange({ aiError: null });
+      
+      const videoPath = getVideoRelativePath();
+      console.log('🎥 Video path being sent:', videoPath);
+      console.log('🎥 Episode path:', episodePath);
+      
+      const requestBody = {
+        video_relative_path: videoPath,
+        prompts: [{
+          frame_idx: 0,
+          prompts: [{
+            type: 'point',
+            coordinates: [160, 120],
+            label: 1
+          }]
+        }],
+        mode: 'automatic_mask_generator'
+      };
+      console.log('📤 Request body:', requestBody);
       
       const response = await fetch('http://localhost:8000/api/v1/ai/process-video', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          video_relative_path: getVideoRelativePath(),
-          prompts: [{
-            frame_idx: 0,
-            prompts: [{
-              type: 'point',
-              coordinates: [160, 120],
-              label: 1
-            }]
-          }],
-          mode: 'automatic_mask_generator'
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -54,69 +105,110 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
 
       const data = await response.json();
+      console.log('🚀 AI processing response:', data);
       
       if (data.success && data.data?.task_id) {
-        setAiTaskId(data.data.task_id);
-        setAiTaskStatus({ status: 'PENDING', progress: 0 });
+        console.log('🎯 Setting AI task ID:', data.data.task_id);
+        const stateUpdate = { 
+          aiTaskId: data.data.task_id,
+          aiTaskStatus: { status: 'PENDING', progress: 0 }
+        };
+        console.log('🔄 Calling onAiStateChange with:', stateUpdate);
+        onAiStateChange(stateUpdate);
       } else {
         throw new Error(data.message || 'Failed to start AI processing');
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      setAiError(errorMessage);
+      onAiStateChange({ aiError: errorMessage });
     }
   };
 
   const checkAITaskStatus = async () => {
-    if (!aiTaskId) return;
+    if (!aiTaskId) {
+      console.log('❌ No AI task ID available for status check');
+      return;
+    }
 
     try {
+      console.log(`🔍 Checking task status for ID: ${aiTaskId}`);
       const response = await fetch(`http://localhost:8000/api/v1/ai/tasks/${aiTaskId}`);
-      
-      if (!response.ok) {
-        console.error(`HTTP error! status: ${response.status}`);
-        return;
-      }
-      
       const data = await response.json();
       
+      console.log('📡 Task status response:', data);
+      
       if (data.success && data.data) {
-        setAiTaskStatus(data.data);
+        console.log('✅ Updating task status:', data.data);
+        const statusUpdate = { aiTaskStatus: data.data };
+        console.log('🔄 Calling onAiStateChange with status update:', statusUpdate);
+        onAiStateChange(statusUpdate);
+        
+        if (data.data.status === 'COMPLETED' || data.data.status === 'FAILED') {
+          console.log(`🏁 Task finished with status: ${data.data.status}`);
+          // Task finished, stop polling
+          return;
+        }
+      } else {
+        console.log('❌ Task status response not successful:', data);
       }
     } catch (error) {
-      console.error('Failed to check AI task status:', error);
+      console.error('💥 Failed to check AI task status:', error);
     }
   };
 
-  // Start AI processing when runAI is toggled on
-  useEffect(() => {
-    if (runAI && !aiTaskId && !aiError) {
-      startAIProcessing();
-    } else if (!runAI && aiTaskId) {
-      // Reset AI state when toggled off
-      setAiTaskId(null);
-      setAiTaskStatus(null);
-      setAiError(null);
-    }
-  }, [runAI, aiTaskId, aiError, startAIProcessing]);
-
-  // Poll for AI task status when task is running
-  useEffect(() => {
-    if (aiTaskId && aiTaskStatus?.status !== 'COMPLETED' && aiTaskStatus?.status !== 'FAILED') {
-      const interval = setInterval(checkAITaskStatus, 2000);
-      return () => clearInterval(interval);
-    }
-  }, [aiTaskId, aiTaskStatus?.status, checkAITaskStatus]);
-
   // Get visualization video URL if available
   const getVisualizationUrl = () => {
-    if (aiTaskStatus?.status === 'COMPLETED' && aiTaskStatus?.result?.visualization) {
-      return `http://localhost:8000${aiTaskStatus.result.visualization.visualization_path}`;
+    console.log('🎬 Getting visualization URL...');
+    console.log('📊 AI Task Status:', aiTaskStatus);
+    console.log('📊 AI Task Result:', aiTaskStatus?.result);
+    console.log('📊 Visualization:', aiTaskStatus?.result?.visualization);
+    console.log('📊 Visualization Path:', aiTaskStatus?.result?.visualization_path);
+    
+    if (aiTaskStatus?.status === 'COMPLETED') {
+      // Try visualization_path first (direct path from result)
+      let visualizationPath = aiTaskStatus?.result?.visualization_path;
+      
+      // Fallback to visualization object path
+      if (!visualizationPath && aiTaskStatus?.result?.visualization) {
+        visualizationPath = aiTaskStatus.result.visualization.visualization_path;
+      }
+      
+      if (visualizationPath) {
+        const url = `http://localhost:8000${visualizationPath}`;
+        console.log('✅ Generated visualization URL:', url);
+        console.log('🔗 Using visualization path:', visualizationPath);
+        return url;
+      } else {
+        console.log('⚠️ Task completed but no visualization path found');
+        console.log('📋 Available result keys:', Object.keys(aiTaskStatus?.result || {}));
+      }
     }
+    console.log('❌ No visualization URL available');
     return null;
   };
 
   const visualizationUrl = getVisualizationUrl();
+
+  // Debug current state
+  console.log('🔍 Current AI State:', {
+    aiTaskId,
+    aiTaskStatus,
+    runAI,
+    visualizationUrl
+  });
+
+  const getStatusIndicator = () => {
+    if (aiTaskStatus?.status === 'COMPLETED' && visualizationUrl) {
+      return 'success';
+    } else if (aiTaskStatus?.status === 'FAILED' || aiError) {
+      return 'error';
+    } else if (aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING') {
+      return 'pending';
+    }
+    return 'empty';
+  };
+
+  const statusIndicator = getStatusIndicator();
 
   return (
     <div className="video-player-container">
@@ -133,16 +225,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             <input
               type="checkbox"
               checked={runAI}
-              onChange={(e) => setRunAI(e.target.checked)}
+              onChange={(e) => onAiStateChange({ runAI: e.target.checked })}
               disabled={aiTaskStatus?.status === 'RUNNING'}
             />
             <span className="toggle-slider"></span>
-            <span className="toggle-label">Run AI</span>
+            <span className="toggle-label">Initiate background AI processing</span>
           </label>
           
           {aiTaskId && (
             <div className="ai-status">
-              <div className={`status-indicator ${aiTaskStatus?.status === 'COMPLETED' ? 'success' : aiTaskStatus?.status === 'FAILED' ? 'error' : 'pending'}`}></div>
+              <div className={`status-indicator ${statusIndicator}`}></div>
               <span className="text-sm text-gray-700">
                 {aiTaskStatus?.status === 'RUNNING' && `Processing... ${Math.round((aiTaskStatus.progress || 0) * 100)}%`}
                 {aiTaskStatus?.status === 'COMPLETED' && 'AI Processing Complete'}
@@ -184,7 +276,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           {/* SAM2 Visualization Section */}
           <div className="video-section">
-            <div className="video-label">SAM2 Segmentation</div>
+            <div className="video-label">
+              SAM2 Segmentation
+              <div className={`status-indicator ${statusIndicator}`}></div>
+            </div>
             <div className="video-wrapper">
               {visualizationUrl ? (
                 <video 
@@ -192,6 +287,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   controls
                   autoPlay
                   className="video-display"
+                  onLoadStart={() => console.log('🎬 Visualization video load started:', visualizationUrl)}
+                  onLoadedData={() => console.log('✅ Visualization video data loaded successfully')}
+                  onCanPlay={() => console.log('▶️ Visualization video can start playing')}
+                  onError={(e) => console.error('❌ Visualization video load error:', e)}
+                  onLoad={() => console.log('📺 Visualization video load complete')}
                 />
               ) : runAI || aiTaskStatus?.status === 'RUNNING' || aiTaskStatus?.status === 'PENDING' ? (
                 <div className="video-placeholder">
@@ -201,6 +301,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     {(aiTaskStatus?.status === 'RUNNING' || runAI) && (
                       <p className="text-sm text-gray-500">
                         Progress: {Math.round((aiTaskStatus?.progress || 0) * 100)}%
+                      </p>
+                    )}
+                    {aiTaskStatus?.result?.visualization_error && (
+                      <p className="text-sm text-red-500">
+                        Visualization Error: {aiTaskStatus.result.visualization_error}
                       </p>
                     )}
                   </div>

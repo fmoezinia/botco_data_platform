@@ -7,6 +7,7 @@ function App() {
   const [expandedScene, setExpandedScene] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<string[]>([]);
   const [scenes, setScenes] = useState<{[key: string]: string[]}>({});
+  const [sceneDetails, setSceneDetails] = useState<{[key: string]: any[]}>({});
   const [episodes, setEpisodes] = useState<{[key: string]: string[]}>({});
   const [loading, setLoading] = useState(true);
   const [loadingScenes, setLoadingScenes] = useState<string | null>(null);
@@ -19,6 +20,14 @@ function App() {
     episodeId: string;
     episodePath: string;
   } | null>(null);
+  
+  // AI toggle state per episode
+  const [episodeAiStates, setEpisodeAiStates] = useState<{[key: string]: {
+    runAI: boolean;
+    aiTaskId: string | null;
+    aiTaskStatus: any | null;
+    aiError: string | null;
+  }}>({});
 
   useEffect(() => {
     fetchScenarios();
@@ -43,8 +52,14 @@ function App() {
     try {
       const response = await fetch(`http://localhost:8000/scenarios/${encodeURIComponent(scenarioId)}/scenes`);
       const data = await response.json();
-      console.log('Scenes data:', data);
-      setScenes(prev => ({ ...prev, [scenarioId]: data.scenes || [] }));
+      setScenes(prev => ({
+        ...prev,
+        [scenarioId]: data.scenes || []
+      }));
+      setSceneDetails(prev => ({
+        ...prev,
+        [scenarioId]: data.scene_details || []
+      }));
     } catch (error) {
       console.error('Error fetching scenes:', error);
     } finally {
@@ -53,12 +68,16 @@ function App() {
   };
 
   const fetchEpisodes = async (scenarioId: string, sceneId: string) => {
-    setLoadingEpisodes(`${scenarioId}-${sceneId}`);
+    const key = `${scenarioId}-${sceneId}`;
+    setLoadingEpisodes(key);
     try {
       const response = await fetch(`http://localhost:8000/scenarios/${encodeURIComponent(scenarioId)}/scenes/${encodeURIComponent(sceneId)}/episodes`);
       const data = await response.json();
-      console.log('Episodes data:', data);
-      setEpisodes(prev => ({ ...prev, [`${scenarioId}-${sceneId}`]: data.episodes || [] }));
+      console.log('episode data:', data);
+      setEpisodes(prev => ({
+        ...prev,
+        [key]: data.episodes || []
+      }));
     } catch (error) {
       console.error('Error fetching episodes:', error);
     } finally {
@@ -66,155 +85,186 @@ function App() {
     }
   };
 
-  const handleScenarioClick = (scenarioId: string) => {
+  const toggleScenario = (scenarioId: string) => {
     if (expandedScenario === scenarioId) {
       setExpandedScenario(null);
       setExpandedScene(null);
     } else {
       setExpandedScenario(scenarioId);
       setExpandedScene(null);
+      // Fetch scenes when opening a scenario
       if (!scenes[scenarioId]) {
         fetchScenes(scenarioId);
       }
     }
   };
 
-  const handleSceneClick = (scenarioId: string, sceneId: string) => {
-    if (expandedScene === sceneId) {
+  const toggleScene = (scenarioId: string, sceneId: string) => {
+    const key = `${scenarioId}-${sceneId}`;
+    if (expandedScene === key) {
       setExpandedScene(null);
     } else {
-      setExpandedScene(sceneId);
-      if (!episodes[`${scenarioId}-${sceneId}`]) {
+      setExpandedScene(key);
+      // Fetch episodes when opening a scene
+      if (!episodes[key]) {
         fetchEpisodes(scenarioId, sceneId);
       }
     }
   };
 
   const handleEpisodeClick = (scenarioId: string, sceneId: string, episodeId: string) => {
-    const episodePath = `/video/${scenarioId}/${sceneId}/${episodeId}`;
-    setSelectedEpisode({
+    // Use the custom video endpoint with proper headers
+    const episodePath = `/video/${scenarioId}/${sceneId}/${episodeId}.mp4`;
+    console.log('App: Episode clicked:', { scenarioId, sceneId, episodeId, episodePath });
+    const newSelectedEpisode = {
       scenarioId,
       sceneId,
       episodeId,
       episodePath
-    });
+    };
+    console.log('App: Setting selectedEpisode to:', newSelectedEpisode);
+    setSelectedEpisode(newSelectedEpisode);
   };
 
-  const getEpisodeName = (episodeId: string) => {
-    return episodeId.replace('.mp4', '');
+  // Helper functions for episode-specific AI state
+  const getEpisodeKey = (scenarioId: string, sceneId: string, episodeId: string) => {
+    return `${scenarioId}/${sceneId}/${episodeId}`;
   };
 
-  const getSceneName = (sceneId: string) => {
-    return sceneId.replace('scene_', 'Scene ').replace(/_/g, ' ');
+  const getCurrentEpisodeAiState = () => {
+    if (!selectedEpisode) return null;
+    const key = getEpisodeKey(selectedEpisode.scenarioId, selectedEpisode.sceneId, selectedEpisode.episodeId);
+    return episodeAiStates[key] || { runAI: false, aiTaskId: null, aiTaskStatus: null, aiError: null };
   };
 
-  const getScenarioName = (scenarioId: string) => {
-    return scenarioId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  const updateEpisodeAiState = (updates: any) => {
+    if (!selectedEpisode) return;
+    const key = getEpisodeKey(selectedEpisode.scenarioId, selectedEpisode.sceneId, selectedEpisode.episodeId);
+    setEpisodeAiStates(prev => ({
+      ...prev,
+      [key]: { ...getCurrentEpisodeAiState(), ...updates }
+    }));
   };
 
-  if (loading) {
-    return (
-      <div className="app">
-        <div className="loading">
-          <div className="spinner"></div>
-          <p>Loading scenarios...</p>
-        </div>
-      </div>
-    );
-  }
+  const getCurrentSceneDescription = () => {
+    if (!selectedEpisode) return null;
+    
+    const details = sceneDetails[selectedEpisode.scenarioId];
+    if (!details) return null;
+    
+    const sceneDetail = details.find(scene => scene.id === selectedEpisode.sceneId);
+    return sceneDetail?.description || null;
+  };
 
   return (
     <div className="app">
-      <div className="main-container">
-        {/* Sidebar */}
-        <div className="sidebar">
-          <div className="sidebar-header">
-            <h1>Botco Data Platform</h1>
-            <p>Video Analysis & AI Processing</p>
-          </div>
-          
-          <div className="sidebar-content">
-            <h2>Scenarios</h2>
-            <div className="scenario-list">
-              {scenarios.map(scenarioId => (
-                <div key={scenarioId} className="scenario-item">
-                  <div 
-                    className="scenario-header"
-                    onClick={() => handleScenarioClick(scenarioId)}
-                  >
-                    <span className="scenario-name">{getScenarioName(scenarioId)}</span>
-                    <span className={`expand-icon ${expandedScenario === scenarioId ? 'expanded' : ''}`}>
-                      ▼
-                    </span>
-                  </div>
-                  
-                  {expandedScenario === scenarioId && (
-                    <div className="scenes-container">
-                      {loadingScenes === scenarioId ? (
-                        <div className="loading-scenes">
-                          <div className="spinner small"></div>
-                          <span>Loading scenes...</span>
-                        </div>
-                      ) : (
-                        scenes[scenarioId]?.map(sceneId => (
-                          <div key={sceneId} className="scene-item">
-                            <div 
-                              className="scene-header"
-                              onClick={() => handleSceneClick(scenarioId, sceneId)}
-                            >
-                              <span className="scene-name">{getSceneName(sceneId)}</span>
-                              <span className={`expand-icon ${expandedScene === sceneId ? 'expanded' : ''}`}>
-                                ▼
-                              </span>
-                            </div>
-                            
-                            {expandedScene === sceneId && (
-                              <div className="episodes-container">
-                                {loadingEpisodes === `${scenarioId}-${sceneId}` ? (
-                                  <div className="loading-episodes">
-                                    <div className="spinner small"></div>
-                                    <span>Loading episodes...</span>
-                                  </div>
-                                ) : (
-                                  episodes[`${scenarioId}-${sceneId}`]?.map(episodeId => (
-                                    <div 
-                                      key={episodeId}
-                                      className={`episode-item ${selectedEpisode?.episodeId === episodeId ? 'selected' : ''}`}
-                                      onClick={() => handleEpisodeClick(scenarioId, sceneId, episodeId)}
-                                    >
-                                      {getEpisodeName(episodeId)}
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+      {/* Header - Thin Blue Bar */}
+      <header className="header">
+        <div className="header-content">
+          <h1 className="header-title">Botco Data Platform</h1>
+        </div>
+      </header>
+
+      {/* Scene Description Section */}
+      {selectedEpisode && (
+        <div className="scene-description-section">
+          <div className="scene-description-content">
+            <h3 className="scene-description-title">Scene Description</h3>
+            <p className="scene-description-text">
+              {getCurrentSceneDescription() || "No description available for this scene."}
+            </p>
           </div>
         </div>
+      )}
 
-        {/* Main Content */}
-        <div className="main-content">
+      <div className="main-container">
+        {/* Left Sidebar */}
+        <aside className="sidebar">
+          <div className="sidebar-content">
+            <h2 className="sidebar-title">Robotics Data</h2>
+            
+            <div className="dropdowns">
+              {loading ? (
+                <div className="loading">Loading scenarios...</div>
+              ) : scenarios.length === 0 ? (
+                <div className="loading">No scenarios found</div>
+              ) : (
+                scenarios.map((scenarioId) => (
+                  <div key={scenarioId} className="dropdown">
+                    <button
+                      className="dropdown-header"
+                      onClick={() => toggleScenario(scenarioId)}
+                    >
+                      <span>{scenarioId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                      <span className={`dropdown-arrow ${expandedScenario === scenarioId ? 'expanded' : ''}`}>
+                        ▼
+                      </span>
+                    </button>
+                    
+                    {expandedScenario === scenarioId && (
+                      <div className="dropdown-content">
+                        {loadingScenes === scenarioId ? (
+                          <div className="loading-subdirs">Loading scenes...</div>
+                        ) : (
+                          scenes[scenarioId]?.map((sceneId) => (
+                            <div key={sceneId} className="nested-dropdown">
+                              <button
+                                className="scene-header"
+                                onClick={() => toggleScene(scenarioId, sceneId)}
+                              >
+                                <span>{sceneId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                                <span className={`dropdown-arrow ${expandedScene === `${scenarioId}-${sceneId}` ? 'expanded' : ''}`}>
+                                  ▼
+                                </span>
+                              </button>
+                              
+                              {expandedScene === `${scenarioId}-${sceneId}` && (
+                                <div className="episode-content">
+                                  {loadingEpisodes === `${scenarioId}-${sceneId}` ? (
+                                    <div className="loading-subdirs">Loading episodes...</div>
+                                  ) : (
+                                    episodes[`${scenarioId}-${sceneId}`]?.map((episodeId) => (
+                                      <button
+                                        key={episodeId}
+                                        className="episode-button"
+                                        onClick={() => handleEpisodeClick(scenarioId, sceneId, episodeId)}
+                                      >
+                                        {episodeId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                                      </button>
+                                    )) || []
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )) || []
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </aside>
+
+        {/* Main Dashboard */}
+        <main className="dashboard">
           {selectedEpisode ? (
             <VideoPlayer
               episodePath={selectedEpisode.episodePath}
-              episodeName={getEpisodeName(selectedEpisode.episodeId)}
-              scenarioName={getScenarioName(selectedEpisode.scenarioId)}
-              sceneName={getSceneName(selectedEpisode.sceneId)}
+              episodeName={selectedEpisode.episodeId}
+              scenarioName={selectedEpisode.scenarioId}
+              sceneName={selectedEpisode.sceneId}
+              aiState={getCurrentEpisodeAiState()}
+              onAiStateChange={updateEpisodeAiState}
             />
           ) : (
-            <div className="no-episode-selected">
-              <h2>Welcome to Botco Data Platform</h2>
-              <p>Select an episode from the sidebar to start viewing and analyzing videos.</p>
+            <div className="dashboard-content">
+              <h1 className="dashboard-title">Botco</h1>
+              <p className="dashboard-subtitle">Select an episode from the sidebar to start viewing</p>
             </div>
           )}
-        </div>
+        </main>
       </div>
     </div>
   );

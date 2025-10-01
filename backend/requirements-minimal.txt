@@ -1,0 +1,11 @@
+# Minimal requirements to get the server running
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+torch>=2.0.0
+torchvision>=0.15.0
+Pillow>=10.4.0
+python-multipart>=0.0.6

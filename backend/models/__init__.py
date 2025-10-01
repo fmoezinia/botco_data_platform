@@ -129,6 +129,8 @@ class ProcessingResult(BaseModel):
     object_tracking: Dict[int, ObjectTracking] = Field(..., description="Object tracking data")
     processing_time: float = Field(..., description="Processing completion timestamp")
     note: str = Field(..., description="Processing note or status")
+    visualization: Optional[Dict[str, Any]] = Field(None, description="Visualization data")
+    visualization_path: Optional[str] = Field(None, description="Path to visualization video")
 
 
 class VisualizationResult(BaseModel):

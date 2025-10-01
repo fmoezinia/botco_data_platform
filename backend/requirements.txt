@@ -5,17 +5,22 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 
 # AI and Computer Vision
-opencv-python==4.8.1.78
+opencv-python>=4.9.0
 numpy>=1.26.0
 torch>=2.0.0
 torchvision>=0.15.0
-Pillow==10.1.0
+Pillow>=10.4.0
 
 # SAM2 Dependencies (install from source)
-# git+https://github.com/facebookresearch/segment-anything-2.git
+git+https://github.com/facebookresearch/segment-anything-2.git
+
+# Additional dependencies for SAM2 and video processing
+transformers>=4.30.0
+timm>=0.9.0
+huggingface-hub>=0.16.0
 
 # Data Processing
-pandas==2.1.4
+pandas>=2.2.0
 matplotlib==3.8.2
 seaborn==0.13.0
 

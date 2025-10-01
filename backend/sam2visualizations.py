@@ -116,22 +116,33 @@ def create_visualization_video(
                 if i < len(colors):
                     color = colors[i]
                     
-                    # Extract segmentation mask
-                    if isinstance(mask_data, dict):
+                    # Extract segmentation mask - handle both MaskData objects and dict format
+                    if hasattr(mask_data, 'segmentation'):
+                        # MaskData object
+                        mask_array = np.array(mask_data.segmentation, dtype=np.uint8)
+                        area = mask_data.area
+                        bbox = mask_data.bbox
+                        predicted_iou = mask_data.predicted_iou
+                        stability_score = mask_data.stability_score
+                    elif isinstance(mask_data, dict):
+                        # Dictionary format
                         mask_array = np.array(mask_data['segmentation'], dtype=np.uint8)
-                        
-                        # Get additional mask info
                         area = mask_data.get('area', 0)
                         bbox = mask_data.get('bbox', [0, 0, 0, 0])
                         predicted_iou = mask_data.get('predicted_iou', 0.0)
                         stability_score = mask_data.get('stability_score', 0.0)
                     else:
-                        # Fallback for old format
+                        # Fallback for old format (raw arrays)
                         mask_array = np.array(mask_data, dtype=np.uint8)
                         area = np.sum(mask_array > 0)
                         bbox = [0, 0, 0, 0]
                         predicted_iou = 0.0
                         stability_score = 0.0
+                    
+                    # Resize mask to match frame dimensions if needed
+                    if mask_array.shape[:2] != frame.shape[:2]:
+                        print(f"Resizing mask from {mask_array.shape[:2]} to {frame.shape[:2]}")
+                        mask_array = cv2.resize(mask_array, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
                     
                     # Create colored overlay
                     colored_mask = np.zeros_like(overlay)

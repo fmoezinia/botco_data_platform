@@ -10,7 +10,7 @@ from typing import Dict, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import mimetypes
 
@@ -19,11 +19,10 @@ from utils.logging import logger
 from exceptions import BotcoException, FileNotFoundError, ServiceUnavailableError
 from models import APIResponse, HealthCheck, ProcessVideoRequest, TaskInfo
 from services.storage_service import storage_manager
-# Task manager import removed - using simple in-memory task_results dictionary
-# SAM2 service import removed - using sam2hiera_service.py directly
+from services.task_manager import task_manager
+from services.sam2_service import sam2_service
 from services.scenario_service import scenario_service
-from sam2hiera_service import _sam2_video_processing_task
-# AI routes are defined directly in main.py, scenarios router imported separately
+from routes import api_router
 
 
 @asynccontextmanager
@@ -38,7 +37,7 @@ async def lifespan(app: FastAPI):
     # Initialize services
     try:
         logger.info("Initializing SAM2 AI service...")
-        # SAM2 service is initialized automatically when imported
+        await sam2_service.initialize()
         logger.info("SAM2 AI service initialized successfully")
     except Exception as e:
         logger.warning(f"SAM2 service initialization failed (optional): {e}")
@@ -58,6 +57,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Botco Data Platform...")
+    task_manager.shutdown()
     logger.info("Shutdown complete")
 
 
@@ -86,11 +86,14 @@ app.add_middleware(
 async def botco_exception_handler(request: Request, exc: BotcoException):
     """Handle custom Botco exceptions."""
     logger.error(f"Botco exception: {exc.message} (Code: {exc.error_code})")
-    return APIResponse(
-        success=False,
-        message=exc.message,
-        error=exc.error_code,
-        data=exc.details
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "message": exc.message,
+            "error": exc.error_code,
+            "data": exc.details
+        }
     )
 
 
@@ -98,10 +101,13 @@ async def botco_exception_handler(request: Request, exc: BotcoException):
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions."""
     logger.error(f"HTTP exception: {exc.detail} (Status: {exc.status_code})")
-    return APIResponse(
-        success=False,
-        message=exc.detail,
-        error=f"HTTP_{exc.status_code}"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "message": exc.detail,
+            "error": f"HTTP_{exc.status_code}"
+        }
     )
 
 
@@ -109,10 +115,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions."""
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
-    return APIResponse(
-        success=False,
-        message="An unexpected error occurred",
-        error="INTERNAL_ERROR"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "message": "An unexpected error occurred",
+            "error": "INTERNAL_ERROR"
+        }
     )
 
 
@@ -121,12 +130,8 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def serve_static_file(path: str):
     """Serve static files with proper headers."""
     file_path = os.path.join(settings.data_dir, path)
-    print(f"🔍 Static file request: {path}")
-    print(f"   Full path: {file_path}")
-    print(f"   File exists: {os.path.exists(file_path)}")
     
     if not os.path.exists(file_path):
-        print(f"❌ File not found: {file_path}")
         raise FileNotFoundError(f"File not found: {path}")
     
     # Determine content type
@@ -163,192 +168,12 @@ async def health_check():
     )
 
 
-# Include API routes (excluding AI routes which are defined directly in main.py)
+# Include API routes
 from routes.scenarios import router as scenarios_router
+app.include_router(api_router, prefix="/api/v1")
 app.include_router(scenarios_router, prefix="/api/v1")
 
-# Simple file-based task storage for persistence
-import json
-TASK_RESULTS_FILE = "task_results.json"
-
-def load_task_results():
-    """Load task results from file."""
-    try:
-        if os.path.exists(TASK_RESULTS_FILE):
-            with open(TASK_RESULTS_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Error loading task results: {e}")
-    return {}
-
-def save_task_results():
-    """Save task results to file."""
-    try:
-        with open(TASK_RESULTS_FILE, 'w') as f:
-            json.dump(task_results, f, indent=2)
-    except Exception as e:
-        print(f"Error saving task results: {e}")
-
-task_results = load_task_results()
-
-# Original working AI endpoints (before refactor)
-@app.post("/api/v1/ai/process-video")
-async def process_video(request: ProcessVideoRequest):
-    """Process video with SAM2 - original working version."""
-    try:
-        import uuid
-    
-        # Generate task ID
-        task_id = str(uuid.uuid4())
-        
-        # Simple progress callback that updates task status
-        def progress_callback(progress: float):
-            logger.info(f"Task {task_id} progress: {progress:.1%}")
-            # Update task status in our persistent storage
-            if task_id in task_results:
-                task_results[task_id]["status"] = "RUNNING"
-                task_results[task_id]["progress"] = progress
-                save_task_results()
-        
-        # Start processing in background
-        import asyncio
-        asyncio.create_task(_process_video_original(task_id, request, progress_callback))
-        
-        return {
-            "success": True,
-            "message": "Video processing started",
-            "data": {"task_id": task_id}
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to start video processing: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-async def _process_video_original(task_id: str, request: ProcessVideoRequest, progress_callback):
-    """Original video processing task."""
-    try:
-        import time
-        
-        # Store initial task status
-        task_results[task_id] = {
-            "task_id": task_id,
-            "status": "RUNNING",
-            "progress": 0.0,
-            "result": None,
-            "error": None,
-            "started_at": time.time(),
-            "completed_at": None
-        }
-        save_task_results()
-        
-        # Process video using original working function
-        result = _sam2_video_processing_task(
-            task_id=task_id,
-            progress_callback=progress_callback,
-            relative_video_path=request.video_relative_path,
-            prompts=request.prompts,
-            mode=request.mode
-        )
-        
-        # Print visualization path for debugging
-        print(f"🎥 Task {task_id} completed successfully!")
-        print(f"📊 Result type: {type(result)}")
-        if isinstance(result, dict):
-            print(f"🔑 Result keys: {list(result.keys())}")
-            if 'visualization' in result:
-                viz_data = result['visualization']
-                print(f"🎬 Visualization data: {viz_data}")
-                if isinstance(viz_data, dict) and 'visualization_path' in viz_data:
-                    print(f"📁 VISUALIZATION PATH: {viz_data['visualization_path']}")
-                else:
-                    print(f"❌ No visualization_path found in: {viz_data}")
-            else:
-                print(f"❌ No 'visualization' key found in result")
-        else:
-            print(f"❌ Result is not a dict: {result}")
-        
-        # Store completed task status
-        task_results[task_id] = {
-            "task_id": task_id,
-            "status": "COMPLETED",
-            "progress": 1.0,
-            "result": result,
-            "error": None,
-            "started_at": task_results[task_id]["started_at"],
-            "completed_at": time.time()
-        }
-        save_task_results()
-        
-        logger.info(f"Video processing completed for task {task_id}")
-        
-    except Exception as e:
-        # Store failed task status
-        if task_id in task_results:
-            task_results[task_id]["status"] = "FAILED"
-            task_results[task_id]["error"] = str(e)
-            task_results[task_id]["completed_at"] = time.time()
-        else:
-            task_results[task_id] = {
-                "task_id": task_id,
-                "status": "FAILED",
-                "progress": 0.0,
-                "result": None,
-                "error": str(e),
-                "started_at": time.time(),
-                "completed_at": time.time()
-            }
-        save_task_results()
-        logger.error(f"Video processing failed for task {task_id}: {e}")
-
-@app.get("/api/v1/ai/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """Get task status - original working version."""
-    if task_id in task_results:
-        task_data = task_results[task_id]
-        print(f"📋 Task {task_id} status: {task_data.get('status')}")
-        return {
-            "success": True,
-            "message": "Task status retrieved",
-            "data": task_data
-        }
-    else:
-        print(f"Task {task_id} not found in task_results")
-        # Return pending status for unknown tasks
-        return {
-            "success": True,
-            "message": "Task status retrieved",
-            "data": {
-                "task_id": task_id,
-                "status": "PENDING",
-                "progress": 0.0,
-                "result": None,
-                "error": None,
-                "started_at": None,
-                "completed_at": None
-            }
-        }
-
-# Debug endpoint to check all tasks
-@app.get("/debug/tasks")
-async def debug_tasks():
-    """Debug endpoint to see all tasks."""
-    return {
-        "task_count": len(task_results),
-        "tasks": list(task_results.keys()),
-        "task_data": task_results
-    }
-
-# Test endpoint to simulate task completion
-@app.post("/debug/test-task/{task_id}")
-async def test_task_completion(task_id: str):
-    """Test endpoint to manually set a task as completed."""
-    if task_id in task_results:
-        task_results[task_id]["status"] = "COMPLETED"
-        task_results[task_id]["progress"] = 1.0
-        save_task_results()
-        return {"message": f"Task {task_id} marked as completed"}
-    else:
-        return {"error": f"Task {task_id} not found"}
+# AI Processing endpoints are now handled by the AI router
 
 # Legacy endpoints for frontend compatibility
 @app.get("/scenarios-list")
@@ -401,24 +226,8 @@ async def legacy_episodes_list(scenario_id: str, scene_id: str):
 @app.get("/video/{path:path}")
 async def legacy_video_serve(path: str):
     """Legacy endpoint for video serving."""
-    video_path = os.path.join(settings.data_dir, "videos", path)
-    
-    if not os.path.exists(video_path):
-        raise HTTPException(status_code=404, detail=f"Video not found: {path}")
-    
-    # Check if it's a video file
-    if not video_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        raise HTTPException(status_code=400, detail="Invalid video format")
-    
-    # Return file response with proper headers
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Accept-Ranges": "bytes"
-        }
-    )
+    video_path = f"videos/{path}"
+    return await serve_static_file(video_path)
 
 
 # Store start time for uptime calculation

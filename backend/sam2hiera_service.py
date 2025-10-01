@@ -9,8 +9,9 @@ import numpy as np
 import torch
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-# TaskStatus import removed - using simple string status
+from services.task_manager import TaskStatus
 from sam2visualizations import create_simple_visualization
+from models import MaskData
 
 # Configuration
 VIDEO_BASE_DIR = "data/videos"
@@ -94,13 +95,52 @@ class Sam2HieraTinyModel:
         
         segmentation_results = []
         for frame_idx in range(0, min(10, frame_count_total), 2):
+            # Create MaskData objects instead of raw lists
+            mask_data_list = []
+            if frame_idx % 4 == 0:
+                # Create two masks
+                mask1 = np.zeros((height//4, width//4), dtype=bool)
+                mask2 = np.ones((height//4, width//4), dtype=bool)
+                
+                mask_data1 = MaskData(
+                    segmentation=mask1.tolist(),
+                    area=int(np.sum(mask1)),
+                    bbox=[0.0, 0.0, float(width//4), float(height//4)],
+                    predicted_iou=0.8,
+                    point_coords=[[0, 0]],
+                    stability_score=0.8,
+                    crop_box=[0.0, 0.0, float(width//4), float(height//4)]
+                )
+                mask_data2 = MaskData(
+                    segmentation=mask2.tolist(),
+                    area=int(np.sum(mask2)),
+                    bbox=[0.0, 0.0, float(width//4), float(height//4)],
+                    predicted_iou=0.9,
+                    point_coords=[[0, 0]],
+                    stability_score=0.9,
+                    crop_box=[0.0, 0.0, float(width//4), float(height//4)]
+                )
+                mask_data_list = [mask_data1, mask_data2]
+                object_ids = [1, 2]
+            else:
+                # Create one mask
+                mask = np.zeros((height//4, width//4), dtype=bool)
+                mask_data = MaskData(
+                    segmentation=mask.tolist(),
+                    area=int(np.sum(mask)),
+                    bbox=[0.0, 0.0, float(width//4), float(height//4)],
+                    predicted_iou=0.8,
+                    point_coords=[[0, 0]],
+                    stability_score=0.8,
+                    crop_box=[0.0, 0.0, float(width//4), float(height//4)]
+                )
+                mask_data_list = [mask_data]
+                object_ids = [1]
+            
             frame_results = {
                 'frame_idx': frame_idx,
-                'object_ids': [1, 2] if frame_idx % 4 == 0 else [1],
-                'masks': [
-                    np.zeros((height//4, width//4), dtype=bool).tolist(),
-                    np.ones((height//4, width//4), dtype=bool).tolist()
-                ] if frame_idx % 4 == 0 else [np.zeros((height//4, width//4), dtype=bool).tolist()],
+                'object_ids': object_ids,
+                'masks': mask_data_list,
                 'timestamp': time.time()
             }
             segmentation_results.append(frame_results)
@@ -153,57 +193,62 @@ class Sam2HieraTinyModel:
                 print(f"ERROR: mask generator returned {type(masks_result)}, expected list")
                 raise Exception(f"Expected masks to be a list, got {type(masks_result)}")
             
-            generated_masks = masks_result
+            # Convert masks to the format expected by propagate_in_video
+            masks = [mask['segmentation'] for mask in masks_result]
             
-            # Process all JPEG frames and apply masks to each
-            segmentation_results = []
-            object_tracking = {}
-            
-            # Process each JPEG frame
-            for frame_idx, jpeg_file in enumerate(jpeg_files):
-                if frame_idx >= len(jpeg_files):
-                    break
-                    
+            # Prepare video frames for propagate_in_video
+            print("Preparing video frames for propagate_in_video...")
+            video_frames = []
+            for jpeg_file in jpeg_files:
                 frame_path = os.path.join(jpeg_folder_path, jpeg_file)
                 frame_image = cv2.imread(frame_path)
                 frame_image = cv2.cvtColor(frame_image, cv2.COLOR_BGR2RGB)
-                
-                # For now, use the same masks for all frames (we can improve this later)
-                # In a more advanced implementation, we could track objects across frames
-                frame_masks = []
+                video_frames.append(frame_image)
+            
+            # Use propagate_in_video to track objects across all frames
+            print("Using propagate_in_video to track objects across frames...")
+            propagated_masks_generator = self.predictor.propagate_in_video(video_frames, masks)
+            # Convert generator to list
+            propagated_masks = list(propagated_masks_generator)
+            print(f"Propagated masks shape: {len(propagated_masks)} frames, {len(propagated_masks[0])} objects")
+            
+            # Process results into our expected format
+            segmentation_results = []
+            object_tracking = {}
+            
+            for frame_idx, (frame_masks, jpeg_file) in enumerate(zip(propagated_masks, jpeg_files)):
+                frame_path = os.path.join(jpeg_folder_path, jpeg_file)
+                frame_masks_list = []
                 frame_object_ids = []
                 
-                for i, mask_data in enumerate(generated_masks):
+                for mask_idx, mask in enumerate(frame_masks):
+                    # Create MaskData object for this mask
+                    mask_data = MaskData(
+                        segmentation=mask.tolist(),
+                        area=int(np.sum(mask)),
+                        bbox=self._get_bbox_from_mask(mask),
+                        predicted_iou=0.9,  # Default value for propagated masks
+                        point_coords=[[0, 0]],  # Default for propagated masks
+                        stability_score=0.9,  # Default value for propagated masks
+                        crop_box=[0.0, 0.0, float(mask.shape[1]), float(mask.shape[0])]
+                    )
+                    frame_masks_list.append(mask_data)
+                    frame_object_ids.append(mask_idx + 1)
                     
-                    # Store full mask data with all metadata
-                    full_mask_data = {
-                        'segmentation': mask_data['segmentation'].tolist(),
-                        'area': int(mask_data['area']),
-                        'bbox': mask_data['bbox'].tolist() if hasattr(mask_data['bbox'], 'tolist') else mask_data['bbox'],
-                        'predicted_iou': float(mask_data['predicted_iou']),
-                        'point_coords': mask_data['point_coords'].tolist() if hasattr(mask_data['point_coords'], 'tolist') else mask_data['point_coords'],
-                        'stability_score': float(mask_data['stability_score']),
-                        'crop_box': mask_data['crop_box'].tolist() if hasattr(mask_data['crop_box'], 'tolist') else mask_data['crop_box']
-                    }
-                    
-                    frame_masks.append(full_mask_data)
-                    frame_object_ids.append(i + 1)
+                    # Initialize object tracking for first frame
+                    if frame_idx == 0:
+                        object_tracking[mask_idx + 1] = {
+                            'first_frame': 0,
+                            'initial_mask': mask.tolist()
+                        }
                 
                 frame_results = {
                     'frame_idx': frame_idx,
                     'object_ids': frame_object_ids,
-                    'masks': frame_masks,
+                    'masks': frame_masks_list,
                     'timestamp': time.time()
                 }
                 segmentation_results.append(frame_results)
-                
-                # Initialize object tracking for first frame
-                if frame_idx == 0:
-                    for i, mask_data in enumerate(generated_masks):
-                        object_tracking[i + 1] = {
-                            'first_frame': frame_idx,
-                            'initial_mask': mask_data['segmentation'].tolist()
-                        }
             
             return {
                 'video_path': video_path,
@@ -217,6 +262,23 @@ class Sam2HieraTinyModel:
         except Exception as e:
             print(f"SAM2 automatic mask generator failed: {e}")
             return self._simulate_processing(video_path, frame_count_total, width, height)
+    
+    def _get_bbox_from_mask(self, mask):
+        """Get bounding box from a binary mask."""
+        try:
+            # Find non-zero pixels
+            rows = np.any(mask, axis=1)
+            cols = np.any(mask, axis=0)
+            
+            if not np.any(rows) or not np.any(cols):
+                return [0, 0, 0, 0]
+            
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
+            
+            return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+        except:
+            return [0, 0, 0, 0]
 
     def _process_with_video_predictor(self, video_path: str, prompts: List[Dict[str, Any]], frame_count_total: int, width: int, height: int) -> Dict[str, Any]:
         """Process video using SAM2 video predictor."""
@@ -257,10 +319,25 @@ class Sam2HieraTinyModel:
                             state, points, labels
                         )
                         
+                        # Convert masks to MaskData objects
+                        mask_data_list = []
+                        for mask in masks:
+                            mask_array = mask if hasattr(mask, 'tolist') else np.array(mask)
+                            mask_data = MaskData(
+                                segmentation=mask_array.tolist(),
+                                area=int(np.sum(mask_array)),
+                                bbox=self._get_bbox_from_mask(mask_array),
+                                predicted_iou=0.9,
+                                point_coords=[[0, 0]],
+                                stability_score=0.9,
+                                crop_box=[0.0, 0.0, float(mask_array.shape[1]), float(mask_array.shape[0])]
+                            )
+                            mask_data_list.append(mask_data)
+                        
                         frame_results = {
                             'frame_idx': frame_idx_result,
                             'object_ids': object_ids.tolist() if hasattr(object_ids, 'tolist') else object_ids,
-                            'masks': [mask.tolist() for mask in masks] if hasattr(masks[0], 'tolist') else masks,
+                            'masks': mask_data_list,
                             'timestamp': time.time()
                         }
                         segmentation_results.append(frame_results)
@@ -346,6 +423,10 @@ def _sam2_video_processing_task(task_id: str, progress_callback: callable, relat
         print(f"Task {task_id}: Generating visualization...")
         viz_result = create_simple_visualization(task_id, result)
         result['visualization'] = viz_result
+        # Extract visualization path for easy access
+        if viz_result and 'visualization_path' in viz_result:
+            result['visualization_path'] = viz_result['visualization_path']
+            print(f"Task {task_id}: Visualization generated at: {viz_result['visualization_path']}")
         print(f"Task {task_id}: Visualization generated successfully")
     except Exception as viz_error:
         print(f"Task {task_id}: Visualization generation failed: {viz_error}")
