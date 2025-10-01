@@ -247,8 +247,8 @@ function App() {
           </div>
         </aside>
 
-        {/* Main Dashboard */}
-        <main className="dashboard">
+        {/* Main Content Area */}
+        <main className="main-content">
           {selectedEpisode ? (
             <VideoPlayer
               episodePath={selectedEpisode.episodePath}

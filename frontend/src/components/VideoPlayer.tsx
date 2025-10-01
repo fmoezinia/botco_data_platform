@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import EpisodeDataGraph from './EpisodeDataGraph';
 
 interface VideoPlayerProps {
   episodePath: string;
@@ -318,6 +319,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Episode Data Graph Section */}
+        <div className="graph-section">
+          <div className="graph-label">Episode Data Visualization</div>
+          <div className="graph-container">
+            <EpisodeDataGraph episodePath={episodePath} />
           </div>
         </div>
       </div>
